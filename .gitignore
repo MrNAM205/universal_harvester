@@ -1,0 +1,31 @@
+# Secrets and Environment Variables
+.env
+.env.*
+
+# Project Specific Secrets
+copilot_auth.json
+copilot_cookies.json
+
+# Harvested Data Files (preventing massive JSON dumps in your repo)
+all_chats_*.json
+topics.json
+copilot_chat_*.json
+single_chat_output.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# IDEs and OS specific
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
