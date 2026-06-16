@@ -9,7 +9,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
@@ -469,7 +469,9 @@ def harvest_all_chats(page: Page, url: Optional[str] = None) -> Dict[str, Any]:
     # =========================
     # Resume-On-Crash State Loader
     # =========================
-    state_file = "harvest_state.json"
+    export_dir = os.path.join(os.getcwd(), "exports")
+    os.makedirs(export_dir, exist_ok=True)
+    state_file = os.path.join(export_dir, "harvest_state.json")
     completed_indices = set()
     if os.path.exists(state_file):
         try:
@@ -506,7 +508,7 @@ def harvest_all_chats(page: Page, url: Optional[str] = None) -> Dict[str, Any]:
                 
             # Stream export to Markdown immediately
             from universal_harvester.utils.exporter import export_to_markdown
-            export_to_markdown({"chats": [chat_dict]}, output_dir=os.path.join(os.getcwd(), "exports"))
+            export_to_markdown({"chats": [chat_dict]}, output_dir=export_dir)
             
         except Exception as e:
             _log(f"Failed to harvest chat index {meta.index} ({meta.title}): {e}")
@@ -515,7 +517,7 @@ def harvest_all_chats(page: Page, url: Optional[str] = None) -> Dict[str, Any]:
     return {
         "source": "copilot.microsoft.com",
         "url": url,
-        "harvested_at": datetime.utcnow().isoformat() + "Z",
+        "harvested_at": datetime.now(timezone.utc).isoformat(),
         "page_type": "copilot_multi_chat",
         "analysis": {
             "total_chats_found": len(all_meta),

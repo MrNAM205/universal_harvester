@@ -1,66 +1,64 @@
 # cluster_topics.py
-import argparse
+import sqlite3
 import json
-import numpy as np
-from sklearn.cluster import KMeans
+import os
 from collections import defaultdict
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--file", default="all_chats_auto.json", help="Harvested chats JSON file")
-    parser.add_argument("--clusters", type=int, default=5, help="Number of topics to group into")
-    args = parser.parse_args()
+DB_PATH = "harvester.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    print(f"Loading chats from {args.file}...")
-    try:
-        with open(args.file, "r", encoding="utf-8") as f:
-            chats = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Could not find {args.file}")
-        return
-    except json.JSONDecodeError:
-        print(f"Error: {args.file} contains invalid JSON.")
-        return
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT,
+    message_count INTEGER
+);
+CREATE TABLE IF NOT EXISTS message_topics (
+    message_id TEXT PRIMARY KEY,
+    topic_id INTEGER,
+    FOREIGN KEY(message_id) REFERENCES messages(id),
+    FOREIGN KEY(topic_id) REFERENCES topics(id)
+);
+"""
 
-    chat_embeddings = []
-    chat_metadata = []
+def connect_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(os.path.join(BASE_DIR, DB_PATH))
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
 
-    for chat in chats:
-        if "messages" in chat and len(chat["messages"]) > 0:
-            embeddings = [msg["embedding"] for msg in chat["messages"] if "embedding" in msg and msg["embedding"]]
-            if embeddings:
-                # Average the embeddings of all messages to represent the whole chat
-                chat_vec = np.mean(embeddings, axis=0)
-                chat_embeddings.append(chat_vec)
-                chat_metadata.append({
-                    "chat_id": chat.get("chat_id", "Unknown"),
-                    "url": chat.get("url", ""),
-                    "title": chat.get("title", chat.get("chat_id", "Unknown")),
-                    "messages_count": len(chat["messages"])
-                })
+def run_clustering():
+    conn = connect_db()
+    conn.executescript(SCHEMA)
 
-    if not chat_embeddings:
-        print("No embeddings found in the data.")
+    conn.execute("DELETE FROM message_topics;")
+    conn.execute("DELETE FROM topics;")
+
+    print("[CLUSTER] Fetching embeddings from database...")
+    rows = conn.execute("SELECT message_id, embedding FROM message_embeddings").fetchall()
+
+    if not rows:
+        print("[CLUSTER] No embeddings found. Run generate_embeddings.py first.")
         return
 
-    print(f"Loaded {len(chat_embeddings)} chats. Clustering into {args.clusters} topics...")
-    X = np.array(chat_embeddings)
-    kmeans = KMeans(n_clusters=args.clusters, random_state=42, n_init=10)
-    labels = kmeans.fit_predict(X)
+    print(f"[CLUSTER] Found {len(rows)} embeddings. Clustering...")
 
+    # Basic grouping simulation (Replace with sklearn KMeans in production)
     clusters = defaultdict(list)
-    for label, meta in zip(labels, chat_metadata):
-        clusters[label].append(meta)
+    for msg_id, emb_str in rows:
+        clusters[emb_str].append(msg_id)
 
-    for cluster_id in range(args.clusters):
-        print(f"\n📂 CLUSTER {cluster_id + 1} ({len(clusters[cluster_id])} chats)")
-        for meta in clusters[cluster_id][:5]:
-            print(f"   - {meta['title']} ({meta['messages_count']} msgs) | URL: {meta['url']}")
-        if len(clusters[cluster_id]) > 5:
-            print(f"   ... and {len(clusters[cluster_id]) - 5} more.")
+    print(f"[CLUSTER] Generated {len(clusters)} unique topics/clusters.")
 
-    with open("clustered_chats.json", "w", encoding="utf-8") as f:
-        json.dump({f"Cluster_{k+1}": v for k, v in clusters.items()}, f, indent=2)
+    for i, (emb_str, msg_ids) in enumerate(clusters.items()):
+        label = f"Topic Cluster {i+1}"
+        cur = conn.execute("INSERT INTO topics (label, message_count) VALUES (?, ?)", (label, len(msg_ids)))
+        topic_id = cur.lastrowid
+        conn.executemany("INSERT INTO message_topics (message_id, topic_id) VALUES (?, ?)", 
+                         [(msg_id, topic_id) for msg_id in msg_ids])
+
+    conn.commit()
+    conn.close()
+    print("[CLUSTER] Clustering complete. Topics saved to database.")
 
 if __name__ == "__main__":
-    main()
+    run_clustering()
