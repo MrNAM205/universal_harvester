@@ -1,6 +1,10 @@
 # scripts/run_harvest.py
 import json
 import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass
 import argparse
 from universal_harvester.agent.harvester import UniversalHarvester
 
@@ -8,7 +12,7 @@ from universal_harvester.agent.harvester import UniversalHarvester
 def main():
     parser = argparse.ArgumentParser(description="Universal Harvester")
     parser.add_argument("url", help="Target URL to harvest")
-    parser.add_argument("--profile", default=None, help="Path to your real Edge user data directory")
+    parser.add_argument("--profile", default=None, help="Path to your real Chrome user data directory")
     
     args = parser.parse_args()
 

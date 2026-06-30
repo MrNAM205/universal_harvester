@@ -83,6 +83,43 @@ def load_unharvested_chats() -> List[sqlite3.Row]:
     with get_db() as conn:
         return conn.execute("SELECT * FROM chats WHERE harvested = 0").fetchall()
 
+def search_messages(keyword: str) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT m.id, m.chat_id, m.author_role, m.content, m.created_at, c.title as chat_title
+            FROM messages m
+            JOIN chats c ON m.chat_id = c.id
+            WHERE m.content LIKE ?
+            ORDER BY m.created_at DESC
+            LIMIT 30
+        """, (f"%{keyword}%",))
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_chat_messages(chat_id: str) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, author_role, content, created_at
+            FROM messages
+            WHERE chat_id = ?
+            ORDER BY created_at ASC
+        """, (chat_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+def list_all_chats() -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.id, c.title, c.source, c.harvested, c.last_updated, COUNT(m.id) as message_count
+            FROM chats c
+            LEFT JOIN messages m ON c.id = m.chat_id
+            GROUP BY c.id
+            ORDER BY c.last_updated DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
 if __name__ == "__main__":
     init_db()
     print(f"[REGISTRY] Initialized database at {DB_PATH}")
+

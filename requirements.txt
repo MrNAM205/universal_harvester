@@ -3,3 +3,6 @@ beautifulsoup4
 lxml
 python-dotenv
 requests
+numpy==1.26.4
+fastapi
+uvicorn

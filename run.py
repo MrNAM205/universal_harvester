@@ -1,4 +1,5 @@
-from universal_harvester.scripts.run_harvest import main
+import asyncio
+from run_pipeline import main
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

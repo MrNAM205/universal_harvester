@@ -81,7 +81,7 @@ def load_chat_urls_from_indexeddb(indexeddb_path):
 def harvest_worker(args):
     url, profile_path = args
     from playwright.sync_api import sync_playwright
-    from universal_harvester.agent.copilot_scraper import extract_messages_cdp
+    from universal_harvester.agent.copilot_scraper import extract_messages_cdp, _extract_chat_messages, hydrate_messages
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -90,7 +90,15 @@ def harvest_worker(args):
         page.goto(url, timeout=60000)
         page.wait_for_timeout(1200)
 
-        messages = extract_messages_cdp(page)
+        # Hydrate older messages by scrolling to the top
+        hydrate_messages(page)
+
+        try:
+            messages = extract_messages_cdp(page)
+            if not messages:
+                messages = _extract_chat_messages(page)
+        except Exception:
+            messages = _extract_chat_messages(page)
 
         browser.close()
 

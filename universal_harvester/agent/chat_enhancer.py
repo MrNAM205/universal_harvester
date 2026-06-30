@@ -1,13 +1,16 @@
 # universal_harvester/agent/chat_enhancer.py
-from sentence_transformers import SentenceTransformer
+from universal_harvester.agent.topic_embeddings import TopicEmbedder
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Load once, reuse everywhere
-MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "C:/models/all-MiniLM-L6-v2")
-_model = SentenceTransformer(MODEL_PATH)
+try:
+    _model = TopicEmbedder()
+except Exception as e:
+    print(f"[WARNING] TopicEmbedder init failed: {e}")
+    _model = None
 
 def format_transcript(chat_json):
     """Return a clean Markdown transcript string."""
@@ -56,7 +59,10 @@ def embed_messages(chat_json):
             text_val = str(text_val)
         texts.append(text_val)
             
-    vectors = _model.encode(texts, convert_to_numpy=True)
+    if _model is None:
+        return chat_json
+        
+    vectors = _model.embed(texts)
 
     for msg, vec in zip(chat_json.get("messages", []), vectors):
         msg["embedding"] = vec.tolist()

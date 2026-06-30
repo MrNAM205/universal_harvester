@@ -1,142 +1,78 @@
-﻿# run_pipeline.py — Unified Universal Harvester Pipeline
+# run_pipeline.py — Minimal Chat Harvester
+import sys
+
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 import argparse
-import asyncio
-import os
-import json
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from typing import Any, Dict, List
-
-from dotenv import load_dotenv
-
-# Import our dynamically generated modules
-from universal_harvester.agent.endpoint_detection import detect_all_endpoints
-from universal_harvester.agent.completeness_verification import CompletenessVerifier
-from universal_harvester.agent.merge_engine import merge_messages
-from universal_harvester.agent.topic_aggregator import TopicAggregator
-from universal_harvester.agent.chat_enhancer import embed_messages
-
-# Import the hardened API clients
+from universal_harvester.agent.auth_manager import ensure_authenticated
 from universal_harvester.agent.copilot_api import (
     fetch_chat_list_via_api,
     fetch_chat_messages_via_api,
 )
+from db import init_db, save_conversation, save_message
+import asyncio
 
-load_dotenv()
+async def harvest_all_chats():
+    print("[HARVEST] Initializing SQLite database...")
+    init_db()
 
-def export_to_json(results: List[Dict[str, Any]], output_file: str) -> None:
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"\n[PIPELINE] Exported {len(results)} fully harvested chats to {output_file}")
+    print("[HARVEST] Fetching conversation list...")
+    conversations = fetch_chat_list_via_api()
 
-def run_topic_processing(file_path: str = "all_chats_verified.json"):
-    print("\n[PIPELINE] Step 6: Running topic embedding + clustering...")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            chats = json.load(f)
+    print(f"[HARVEST] Found {len(conversations)} conversations.")
 
-        aggregator = TopicAggregator(n_clusters=5)
-        topics = aggregator.process_and_group(chats)
+    for conv in conversations:
+        if not conv:
+            continue
+            
+        conv_id = conv.get("id") or conv.get("conversationId") or conv.get("chatId")
+        if not conv_id:
+            continue
+            
+        title = conv.get("title") or conv.get("name") or "Untitled"
+        created_at = conv.get("created_at", 0)
 
-        print(f"  -> Saving topic groups to topics.json...")
-        with open("topics.json", "w", encoding="utf-8") as f:
-            json.dump(topics, f, indent=2, ensure_ascii=False)
+        print(f"[HARVEST] Harvesting conversation {conv_id} ({title})")
 
-        print("  -> Topic processing complete.")
-        for name, group in topics.items():
-            print(f"     - {name}: {len(group)} chats")
-    except Exception as e:
-        print(f"  [X] Topic processing failed: {e}")
+        # Save conversation metadata
+        save_conversation(conv_id, title, created_at)
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(description="Universal Harvester - Unified Pipeline")
-    parser.add_argument(
-        "--export",
-        default="all_chats_verified.json",
-        help="Output JSON file for harvested chats",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=8,
-        help="Maximum number of parallel workers for message fetching",
-    )
-    parser.add_argument(
-        "--diagnostic",
-        action="store_true",
-        help="Enable diagnostic mode to print detailed authentication failure reasons",
-    )
-    args = parser.parse_args()
+        # Fetch full history
+        try:
+            api_messages = fetch_chat_messages_via_api(conv_id)
+        except Exception as e:
+            print(f"    [X] Failed to fetch history: {e}")
+            continue
 
-    print("\n=======================================================")
-    print("⭐ UNIVERSAL HARVESTER PIPELINE STARTING ⭐")
+        msg_index = 0
+        for msg in api_messages:
+            msg_id = msg.get("id", "")
+            role = msg.get("role", "unknown")
+            content = msg.get("text", "")
+            timestamp = msg.get("createdAt", 0)
+
+            save_message(msg_id, conv_id, role, content, timestamp, msg_index)
+            msg_index += 1
+
+        print(f"[HARVEST] Saved {msg_index} messages for {conv_id}")
+
+    print("[HARVEST] Complete.")
+
+async def main():
+    print("=======================================================")
+    print("*** UNIVERSAL HARVESTER (MINIMAL MODE) STARTING ***")
     print("=======================================================\n")
-
-    # STEP 1: Endpoint Detection
-    print("[PIPELINE] Step 1: Analyzing captured auth logs...")
-    endpoint_profile = detect_all_endpoints()
-    print(endpoint_profile.summary())
-
-    # STEP 2: Browser UI Automation (SKIPPED)
-    print("\n[PIPELINE] Step 2: UI Automation Skipped (API-Only Mode)")
-    sidebar_chats = []
-
-    # STEP 3: API Initialization 
-    print("\n[PIPELINE] Step 3: Engaging Primary API Harvester...")
-    try:
-        api_chat_list = fetch_chat_list_via_api()
-        print(f"  -> Retrieved {len(api_chat_list)} active conversation headers via API.")
-    except RuntimeError as e:
-        print(f"  [X] API Harvesting Failed: {e}")
-        return
-
-    results: List[Dict[str, Any]] = []
-    api_ids = [c.get("id") for c in api_chat_list if c]
-    sidebar_titles = [] # Skipped UI extraction
-
-    # STEP 4: API Harvesting
-    print(f"\n[PIPELINE] Step 4: API Harvesting in Progress...")
     
-    for i, chat in enumerate(api_chat_list, start=1):
-        title = chat.get("title") or chat.get("name") or "Untitled"
-        cid = chat.get("id") or chat.get("conversationId") or chat.get("chatId")
-        
-        print(f"  -> [{i}/{len(api_chat_list)}] Harvesting: {title} ({cid})")
-            
-        try:
-            api_messages = fetch_chat_messages_via_api(cid)
-        except Exception as e:
-            print(f"    [X] API Harvest Failed: {e}")
-            api_messages = []
-            
-        # We merge with an empty list to retain the same structure and formatting
-        final_messages = merge_messages(api_messages, [])
-        
-        chat_obj = {"id": cid, "title": title, "messages": final_messages}
-        try:
-            chat_obj = embed_messages(chat_obj)
-        except Exception as e:
-            print(f"    [X] Embedding Failed: {e}")
-        results.append(chat_obj)
-        print(f"    [✓] Retrieved {len(api_messages)} API msgs.")
-
-    export_to_json(results, args.export)
-
-    # STEP 5: Completeness Verification
-    print("\n[PIPELINE] Step 5: Generating Verification Report...")
-    harvested_ids = [c["id"] for c in results]
-    report = CompletenessVerifier.verify(
-        api_chat_ids=api_ids,
-        harvested_chat_ids=harvested_ids,
-        sidebar_titles=sidebar_titles,
-        endpoint_profile=endpoint_profile.to_dict(),
-    )
-    print("\n" + report.summary())
-
-    # STEP 6: Topic Processing
-    run_topic_processing(args.export)
+    print("[PIPELINE] Ensuring authentication is valid...")
+    await ensure_authenticated()
+    
+    await harvest_all_chats()
 
 if __name__ == "__main__":
     asyncio.run(main())

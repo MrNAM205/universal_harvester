@@ -1,13 +1,14 @@
 # universal_harvester/agent/harvester.py
 import socket
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
 from universal_harvester.agent.detector import detect_page_type
 from universal_harvester.agent.scraper import adaptive_scrape
 from universal_harvester.agent.navigator import Navigator
 
-def is_port_open(host: str = "localhost", port: int = 9222) -> bool:
+def is_port_open(host: str = "127.0.0.1", port: int = 9222) -> bool:
     try:
         with socket.create_connection((host, port), timeout=1):
             return True
@@ -32,9 +33,9 @@ class UniversalHarvester:
         print("[HARVESTER DIAGNOSTICS] Checking port 9222...")
         if not is_port_open("localhost", 9222):
             print("\n❌ Remote debugging is NOT running.")
-            print("➡️  You MUST launch Edge manually first:")
-            print('   msedge.exe --remote-debugging-port=9222 --user-data-dir="C:\\EdgeDebug"\n')
-            return {"error": "Port 9222 not open. Launch Edge with remote debugging."}
+            print("➡️  You MUST launch Chrome manually first:")
+            print('   chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\ChromeDebug"\n')
+            return {"error": "Port 9222 not open. Launch Chrome with remote debugging."}
 
         print("[HARVESTER DIAGNOSTICS] Port 9222 open: YES")
         print(f"[HARVESTER DIAGNOSTICS] Profile path detected: {self.user_data_dir if self.user_data_dir else 'None'}")
@@ -42,7 +43,7 @@ class UniversalHarvester:
 
         with sync_playwright() as p:
             try:
-                browser = p.chromium.connect_over_cdp("http://localhost:9222")
+                browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
                 # Use the existing context and the existing tab where Copilot is already open.
                 # This prevents the Service Worker from blocking navigation.
                 context = browser.contexts[0]
@@ -84,8 +85,54 @@ class UniversalHarvester:
                     # --- D: Add embeddings ---
                     result = embed_messages(result)
                 else:
-                    result = harvest_all_chats(page, url)
-                    result["mode"] = "multi_chat"
+                    # ========================================================
+                    # TRUE HYBRID HARVESTER: Merge & Deduplicate
+                    # ========================================================
+                    _log("Multi-chat true hybrid export mode initialized.")
+                    
+                    api_results = []
+                    try:
+                        from universal_harvester.agent.copilot_api import fetch_chat_list_via_api, fetch_chat_messages_via_api
+                        _log("Attempting fast-path API extraction...")
+                        api_chats = fetch_chat_list_via_api()
+                        
+                        for c in api_chats:
+                            msgs = fetch_chat_messages_via_api(c["id"])
+                            # Normalize the ID key so it matches UI structure
+                            c["chat_id"] = c.get("id")
+                            c["messages"] = msgs
+                            api_results.append(c)
+                            
+                        mode = "multi_chat_api"
+                        _log("API extraction fully successful.")
+                    except Exception as api_err:
+                        _log(f"API fast-path partial or total failure ({api_err}). Flagging for UI fallback...")
+                        mode = "multi_chat_hybrid_fallback"
+
+                    ui_chats = []
+                    if mode == "multi_chat_hybrid_fallback":
+                        _log("Executing UI scraper to fill gaps...")
+                        ui_result = harvest_all_chats(page, url)
+                        ui_chats = ui_result.get("chats", [])
+                        
+                    # --- Merge & Deduplicate Logic ---
+                    merged_dict = {}
+                    for c in api_results:
+                        merged_dict[c.get("chat_id")] = c
+                    for c in ui_chats:
+                        cid = c.get("chat_id")
+                        if cid and cid not in merged_dict:
+                            merged_dict[cid] = c
+                            
+                    merged_chats = list(merged_dict.values())
+
+                    result = {
+                        "mode": mode,
+                        "source": "copilot.microsoft.com",
+                        "url": url,
+                        "harvested_at": datetime.now(timezone.utc).isoformat(),
+                        "chats": merged_chats
+                    }
             else:
                 navigator = Navigator(page)
                 navigator.goto(url)
@@ -93,6 +140,6 @@ class UniversalHarvester:
                 result = adaptive_scrape(page, analysis)
 
             # Cleanup: Do not close the user's existing tab if attached via CDP!
-            browser.close()  # Disconnects CDP without killing your Edge process
+            browser.close()  # Disconnects CDP without killing your Chrome process
 
             return result

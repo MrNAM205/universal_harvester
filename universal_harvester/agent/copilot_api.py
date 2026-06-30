@@ -139,6 +139,35 @@ def _extract_next_cursor(data: Any) -> Optional[str]:
     return None
 
 
+def _normalize_api_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalizes a raw API message into the unified {id, role, text, createdAt} format.
+    """
+    msg_id = msg.get("id", "")
+    created_at = msg.get("createdAt", "")
+    
+    author_type = msg.get("author", {}).get("type", "user")
+    role = "assistant" if author_type.lower() == "ai" else "user"
+    
+    # Extract text from content blocks
+    text_blocks = []
+    for block in msg.get("content", []):
+        if block.get("type") == "text":
+            text = block.get("text")
+            if text:
+                text_blocks.append(text)
+    
+    text = "\n\n".join(text_blocks)
+    
+    return {
+        "id": msg_id,
+        "role": role,
+        "text": text,
+        "createdAt": created_at,
+        "raw": msg
+    }
+
+
 def _extract_chat_ids_from_auth() -> List[str]:
     """
     Scan copilot_auth.json for history endpoints and extract chat IDs.
@@ -176,9 +205,50 @@ def _extract_chat_ids_from_auth() -> List[str]:
 
 def fetch_chat_list_via_api() -> List[Dict[str, Any]]:
     """
-    Build a 'chat list' by using the history endpoints we actually see in copilot_auth.json.
-    Each chat is represented minimally as {'id': chat_id}.
+    Fetch the full chat list from the /c/api/conversations endpoint,
+    falling back to extracting from auth logs if needed.
     """
+    session, _ = _build_session()
+    all_chats: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    page_index = 0
+
+    while True:
+        params = {"types": "chat,character,xbox,group"}
+        if cursor:
+            params["cursor"] = cursor
+
+        url = f"{COPILOT_BASE}/c/api/conversations"
+        
+        try:
+            resp = session.get(url, params=params)
+            
+            if resp.status_code == 404:
+                # Endpoint doesn't exist? Fallback.
+                break
+            if resp.status_code != 200:
+                print(f"[API] Error getting conversations list: {resp.status_code}")
+                break
+
+            data = resp.json()
+            page_chats = _normalize_results_container(data)
+            all_chats.extend(page_chats)
+
+            cursor = _extract_next_cursor(data)
+            page_index += 1
+
+            if not cursor:
+                break
+            time.sleep(0.2)
+        except Exception as e:
+            print(f"[API] Exception fetching conversations list: {e}")
+            break
+            
+    if all_chats:
+        print(f"[API] Discovered {len(all_chats)} chats from API conversations endpoint.")
+        return all_chats
+        
+    print("[API] Falling back to discovering chats from history endpoints in auth file.")
     chat_ids = _extract_chat_ids_from_auth()
     print(f"[API] Discovered {len(chat_ids)} chats from history endpoints.")
 
@@ -231,7 +301,10 @@ def fetch_chat_messages_via_api(chat_id: str) -> List[Dict[str, Any]]:
 
         data = resp.json()
         page_messages = _normalize_results_container(data)
-        all_messages.extend(page_messages)
+        
+        # Normalize the raw API messages to the unified {id, role, text} format
+        for pm in page_messages:
+            all_messages.append(_normalize_api_message(pm))
 
         cursor = _extract_next_cursor(data)
         page_index += 1

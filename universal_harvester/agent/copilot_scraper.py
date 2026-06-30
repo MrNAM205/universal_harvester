@@ -40,128 +40,40 @@ def _log(msg: str) -> None:
     print(f"[COPILOT] {msg}")
 
 
-REAL_TOGGLE = 'button[data-testid="sidebar-toggle-button"]:visible, button[id="sidebar-toggle-button"]:visible, button[aria-controls="sidebar-container"]:visible'
-
-
-def sidebar_is_open(page: Page) -> bool:
-    """Return True if the sidebar is currently open."""
-    try:
-        toggle = page.locator(REAL_TOGGLE)
-        if toggle.count() == 0:
-            return False
-        expanded = toggle.get_attribute("aria-expanded")
-        return expanded == "true"
-    except Exception:
-        return False
-
-
-def sidebar_is_visible(page: Page) -> bool:
-    """Return True if the sidebar container is visible."""
-    return page.locator('div[id="sidebar-container"]:visible, div[role="listbox"]:visible, div[data-testid="sidebar-expanded-content"]:visible').count() > 0
-
-
-def reveal_toggle_button(page: Page) -> None:
-    """
-    Copilot hides the toggle in mobile/narrow mode.
-    Hovering the left edge reveals it.
-    """
-    page.mouse.move(5, 200)
-    page.wait_for_timeout(250)
-
-
-def click_real_toggle(page: Page) -> bool:
-    """
-    Click ONLY the visible toggle button.
-    Avoids the invisible overlay button.
-    """
-    toggle = page.locator(REAL_TOGGLE)
-
-    if toggle.count() == 0:
-        reveal_toggle_button(page)
-        toggle = page.locator(REAL_TOGGLE)
-
-    if toggle.count() == 0:
-        return False
-
-    if toggle.is_visible():
-        toggle.click()
-        page.wait_for_timeout(400)
-        return True
-
-    return False
-
-
-def force_open_sidebar(page: Page) -> None:
-    """
-    Last-resort fallback: force the sidebar to display via CSS.
-    Safe because it only affects visibility, not layout logic.
-    """
-    page.evaluate(
-        """
-        () => {
-            const el = document.querySelector('#sidebar-container');
-            if (el) el.style.display = 'block';
-        }
-        """
-    )
-    page.wait_for_timeout(300)
-
-
 def ensure_sidebar_open(page: Page) -> None:
     """
-    Master function:
-    - Detects current state
-    - Reveals toggle if hidden
-    - Clicks only the real toggle
-    - Falls back to keyboard shortcut
-    - Falls back to CSS injection
+    Ensures the Copilot sidebar is open.
     """
     _log("Ensuring sidebar is open...")
-
-    if sidebar_is_open(page) and sidebar_is_visible(page):
-        return
-
-    if click_real_toggle(page):
-        if sidebar_is_visible(page):
-            return
-
-    # Keyboard shortcut fallback
-    page.keyboard.down("Control")
-    page.keyboard.down("Shift")
-    page.keyboard.press("y")
-    page.keyboard.up("Shift")
-    page.keyboard.up("Control")
-    page.wait_for_timeout(500)
-
-    if sidebar_is_visible(page):
-        return
-
-    # CSS fallback
-    force_open_sidebar(page)
+    toggle = page.locator('button[data-testid="sidebar-toggle-button"]')
+    if toggle.count() > 0:
+        try:
+            # Check if sidebar is already open
+            if toggle.first.get_attribute("aria-expanded") == "true":
+                return
+            toggle.first.click()
+            page.wait_for_timeout(300)
+        except Exception:
+            pass
 
 
 def enumerate_chats(page: Page, timeout: int = 15000) -> List[ChatMeta]:
     """
-    Enumerate all chats in the sidebar by handling virtual scrolling.
-    This function is fully stable and React-safe.
+    Enumerate all chats in the sidebar by handling virtual scrolling. This function is fully stable and React-safe.
     """
     _log("Enumerating all chats in sidebar (Chrome‑safe virtual scroll)...")
     ensure_sidebar_open(page)
 
-    listbox_selector = '[data-testid="chat-history-list"], div[role="listbox"]'
+    item_selector = 'div[role="link"]:has(button[id^="conversation-options-"])'
     try:
-        page.wait_for_selector(listbox_selector, timeout=timeout)
+        page.wait_for_selector(item_selector, timeout=timeout)
     except PlaywrightTimeoutError:
-        raise RuntimeError("Chat listbox not visible; sidebar structure may have changed.")
-
-    sidebar = page.locator(listbox_selector).first
+        raise RuntimeError("Chat items not visible; sidebar structure may have changed.")
 
     # --- Chrome Virtual Scroll Stabilizer ---
     last_count = -1
     while True:
-        items = sidebar.locator(
-            '[data-testid="chat-history-item"], div[role="option"], a[href*="/chats/"]'
-        )
+        items = page.locator(item_selector)
         current_count = items.count()
 
         if current_count == last_count:
@@ -169,32 +81,28 @@ def enumerate_chats(page: Page, timeout: int = 15000) -> List[ChatMeta]:
 
         last_count = current_count
 
-        # Scroll last item into view
-        items.nth(current_count - 1).scroll_into_view_if_needed()
-
-        # Chrome-safe absolute scroll
-        sidebar.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+        if current_count > 0:
+            try:
+                items.nth(current_count - 1).scroll_into_view_if_needed()
+            except Exception:
+                pass
 
         page.wait_for_timeout(800)
 
-    items_locator = sidebar.locator(
-        '[data-testid="chat-history-item"], div[role="option"], a[href*="/chats/"]'
-    )
+    items_locator = page.locator(item_selector)
     items = items_locator.all()
     _log(f"Final count: Found {len(items)} total chats.")
-
+    
     all_meta: List[ChatMeta] = []
     for i, item in enumerate(items):
         aria_label = item.get_attribute("aria-label") or f"Chat {i}"
         
-        title_el = item.locator("p[title]")
+        title_el = item.locator("p.truncate, p[title]")
         if title_el.count() > 0:
-            title = title_el.first.get_attribute("title")
+            title = title_el.first.get_attribute("title") or title_el.first.inner_text().strip()
         else:
             title = item.inner_text().strip()
             
-        title = title or aria_label
-
         all_meta.append(ChatMeta(index=i, title=title, aria_label=aria_label))
 
     return all_meta
@@ -207,55 +115,19 @@ def _open_chat_from_sidebar(page: Page, meta: ChatMeta, timeout: int = 15000) ->
     _log(f"Opening chat from sidebar: index={meta.index}, title={meta.title!r}")
     ensure_sidebar_open(page)
 
-    sidebar = page.locator('[data-testid="chat-history-list"], div[role="listbox"]').first
-    sidebar.wait_for(state="visible", timeout=timeout)
+    item_selector = 'div[role="link"]:has(button[id^="conversation-options-"])'
+    page.wait_for_selector(item_selector, timeout=timeout)
 
-    chat_items = sidebar.locator(
-        '[data-testid="chat-history-item"], div[role="option"], a[href*="/chats/"]'
-    )
+    chat_items = page.locator(item_selector)
 
     if meta.index >= chat_items.count():
-        raise IndexError(f"Chat index {meta.index} out of range.")
+        raise RuntimeError(
+            f"Chat index {meta.index} out of range; only {chat_items.count()} items visible."
+        )
 
-    item = chat_items.nth(meta.index)
-
-    # Ensure Chrome loads the element
-    item.scroll_into_view_if_needed()
-    item.evaluate("el => el.scrollIntoView(true);")
-    item.click()
-
+    chat_items.nth(meta.index).click()
     page.wait_for_timeout(1500)
 
-    # --- Chrome-safe scroll container detection ---
-    candidates = [
-        '[data-message-container]',
-        'div[data-testid="backstage-chats"]',
-        'div[data-testid="chat-page"] div[class*="overflow-y-auto"]',
-        'div[data-testid="chat-page"]'
-    ]
-
-    scroll_container = None
-    for sel in candidates:
-        try:
-            scroll_container = page.locator(sel).first
-            scroll_container.wait_for(state="visible", timeout=2000)
-            break
-        except Exception:
-            continue
-
-    if scroll_container is None:
-        raise RuntimeError("Could not locate chat scroll container.")
-
-    # --- Chrome-safe scroll-to-top (lazy-load older messages) ---
-    last_height = None
-    while True:
-        scroll_container.evaluate("el => { el.scrollTop = 0; }")
-        page.wait_for_timeout(800)
-
-        new_height = scroll_container.evaluate("el => el.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
 
 def extract_messages_cdp(page: Page) -> List[Dict[str, Any]]:
     """
@@ -339,7 +211,7 @@ def hydrate_messages(page: Page) -> int:
 
     for _ in range(80):  # increased cap for long chats
         messages = page.locator(
-            'div[class*="group/user-message"], div[class*="group/ai-message"]'
+            'div[class*="group/user-message"], div[class*="group/ai-message"], div[data-message-author]'
         )
         count = messages.count()
 
@@ -393,37 +265,43 @@ def _extract_chat_messages(page: Page) -> List[Dict[str, Any]]:
     """
     _log("Extracting messages from current chat...")
 
-    # Ensure all messages are loaded
-    hydrate_messages(page)
-
     messages = []
+    
+    # Locate all message blocks in visual DOM order
+    message_selector = 'div[data-message-author], div[class*="group/user-message"], div[class*="group/ai-message"]'
+    blocks = page.locator(message_selector).all()
+    
+    for i, block in enumerate(blocks):
+        role = block.get_attribute("data-message-author")
+        if not role:
+            # Fallback based on class/outerHTML
+            html = block.evaluate("el => el.outerHTML")
+            if "user-message" in html:
+                role = "user"
+            elif "ai-message" in html:
+                role = "assistant"
+            else:
+                continue
 
-    # USER MESSAGES
-    for i, block in enumerate(page.locator('div[class*="group/user-message"]').all()):
-        text_el = block.locator('div[data-content="user-message"]')
-        text = text_el.inner_text().strip() if text_el.count() else ""
-        msg_id = block.get_attribute("id") or f"user-{i}"
+        role = "user" if "user" in role.lower() else "assistant"
+        msg_id = block.get_attribute("id") or f"{role}-{i}"
+
+        if role == "user":
+            text_el = block.locator('div[data-content="user-message"]')
+            if text_el.count() > 0:
+                text = text_el.first.inner_text().strip()
+            else:
+                text = block.inner_text().strip()
+        else:
+            text = extract_ai_text(block)
+            if not text.strip():
+                text = block.inner_text().strip()
 
         messages.append({
             "id": msg_id,
-            "role": "user",
+            "role": role,
             "text": text
         })
-
-    # AI MESSAGES
-    for i, block in enumerate(page.locator('div[class*="group/ai-message"]').all()):
-        msg_id = block.get_attribute("id") or f"assistant-{i}"
-        text = extract_ai_text(block)
-
-        if text.strip():
-            messages.append({
-                "id": msg_id,
-                "role": "assistant",
-                "text": text
-            })
-
-    # Sort chronologically by message ID
-    messages.sort(key=lambda m: m.get("id", ""))
 
     _log(f"Extracted {len(messages)} messages.")
     return messages
@@ -434,6 +312,9 @@ def harvest_chat(page: Page, meta: ChatMeta) -> ChatData:
     Clicks into a chat, scrolls to hydrate messages, and extracts the bubbles.
     """
     _open_chat_from_sidebar(page, meta)
+    
+    # Force scroll-up hydration before any extraction attempts
+    hydrate_messages(page)
     
     try:
         messages = extract_messages_cdp(page)
