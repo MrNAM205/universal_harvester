@@ -29,3 +29,14 @@ env/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Additional Harvested Data and Databases
+*.db
+*.db-shm
+*.db-wal
+ui_harvest_results.json
+output.txt
+filtered_conversations.txt
+
+# Exports
+exports/
